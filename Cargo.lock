@@ -3808,6 +3808,7 @@ dependencies = [
  "aptos-crypto",
  "aptos-gas",
  "aptos-sdk-builder",
+ "aptos-state-view",
  "aptos-types",
  "aptos-vm",
  "bcs",
