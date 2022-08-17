@@ -747,7 +747,18 @@ impl CliCommand<()> for AnalyzeValidatorPerformance {
             let epoch_stats = AnalyzeValidators::analyze(epoch_info.blocks, &epoch_info.validators);
             if print_detailed {
                 println!("Detailed table for epoch {}:", epoch_info.epoch);
-                AnalyzeValidators::print_detailed_epoch_table(&epoch_stats, None, true);
+                AnalyzeValidators::print_detailed_epoch_table(
+                    &epoch_stats,
+                    Some((
+                        "voting_power",
+                        &epoch_info
+                            .validators
+                            .iter()
+                            .map(|v| (v.address, v.voting_power.to_string()))
+                            .collect::<HashMap<_, _>>(),
+                    )),
+                    true,
+                );
             }
             stats.insert(epoch_info.epoch, epoch_stats);
         }

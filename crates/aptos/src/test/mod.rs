@@ -835,7 +835,7 @@ pub struct ValidatorSet {
     pub pending_active: Vec<ValidatorInfo>,
 }
 
-fn to_validator_set(value: &serde_json::Value) -> ValidatorSet {
+pub fn to_validator_set(value: &serde_json::Value) -> ValidatorSet {
     ValidatorSet {
         consensus_scheme: match value.get("consensus_scheme").unwrap().as_u64().unwrap() {
             0u64 => ConsensusScheme::BLS12381,

@@ -3,14 +3,20 @@
 
 use crate::smoke_test_environment::SwarmBuilder;
 use crate::test_utils::reconfig;
+use aptos::node::analyze::analyze_validators::{AnalyzeValidators, EpochStats};
+use aptos::node::analyze::fetch_metadata::FetchMetadata;
+use aptos::test::to_validator_set;
 use aptos::{account::create::DEFAULT_FUNDED_COINS, test::CliTestFramework};
 use aptos_crypto::ed25519::Ed25519PrivateKey;
 use aptos_crypto::{bls12381, x25519};
 use aptos_genesis::config::HostAndPort;
 use aptos_keygen::KeyGen;
-use aptos_rest_client::Transaction;
+use aptos_rest_client::{Client, State, Transaction};
+use aptos_types::account_config::CORE_CODE_ADDRESS;
 use aptos_types::network_address::DnsName;
+use aptos_types::PeerId;
 use forge::{NodeExt, Swarm};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,6 +73,239 @@ async fn test_show_validator_set() {
             .account_address(),
         &swarm.validators().next().unwrap().peer_id()
     );
+}
+
+#[tokio::test]
+async fn test_nodes_rewards() {
+    // 10%APY => 100 rewards per second
+    const BASE: u64 = 3600u64 * 24 * 365 * 10 * 100;
+
+    let (mut swarm, mut cli, _faucet) = SwarmBuilder::new_local(4)
+        .with_init_config(Arc::new(|i, conf, genesis_stake_amount| {
+            // reduce timeout, as we will have dead node during rounds
+            conf.consensus.round_initial_timeout_ms = 200;
+            conf.consensus.quorum_store_poll_count = 4;
+            conf.api.failpoints_enabled = true;
+
+            // make sure we have quorum
+            *genesis_stake_amount = if i < 2 { 10 * BASE } else { BASE };
+        }))
+        .with_init_genesis_config(Arc::new(|genesis_config| {
+            genesis_config.allow_new_validators = true;
+            genesis_config.epoch_duration_secs = 5;
+            genesis_config.recurring_lockup_duration_secs = 5;
+            genesis_config.voting_duration_secs = 4;
+            genesis_config.rewards_apy_percentage = 10;
+        }))
+        .build_with_cli(0)
+        .await;
+
+    let transaction_factory = swarm.chain_info().transaction_factory();
+
+    let mut validators: Vec<_> = swarm.validators().collect();
+    validators.sort_by_key(|v| v.name());
+
+    let validator_cli_indices = validators
+        .iter()
+        .map(|validator| cli.add_account_to_cli(validator.account_private_key().clone().unwrap()))
+        .collect::<Vec<_>>();
+    let rest_clients = validators
+        .iter()
+        .map(|validator| validator.rest_client())
+        .collect::<Vec<_>>();
+    let addresses = validators
+        .iter()
+        .map(|validator| validator.peer_id())
+        .collect::<Vec<_>>();
+
+    println!("{:?}", addresses.iter().enumerate().collect::<Vec<_>>());
+
+    async fn get_state_and_validator_set(rest_client: &Client) -> (State, HashMap<PeerId, u64>) {
+        let response = rest_client
+            .get_resource(CORE_CODE_ADDRESS, "0x1::stake::ValidatorSet")
+            .await
+            .unwrap();
+        let (result, state) = response.into_parts();
+        let validator_set = to_validator_set(&result);
+        let validator_to_voting_power = validator_set
+            .active_validators
+            .iter()
+            .chain(validator_set.pending_inactive.iter())
+            .map(|v| (v.account_address, v.consensus_voting_power()))
+            .collect::<HashMap<_, _>>();
+        (state, validator_to_voting_power)
+    }
+
+    println!(
+        "{:?}",
+        get_state_and_validator_set(&rest_clients[0]).await.1
+    );
+
+    rest_clients[2]
+        .set_failpoint(
+            "consensus::send::broadcast_proposal".to_string(),
+            "50%return".to_string(),
+        )
+        .await
+        .unwrap();
+
+    reconfig(
+        &rest_clients[0],
+        &transaction_factory,
+        swarm.chain_info().root_account(),
+    )
+    .await;
+
+    let (start_2_failures_state, start_2_failures_validator_set) =
+        get_state_and_validator_set(&rest_clients[0]).await;
+    println!(
+        "Node 2 ({}) starts failing: at epoch {} and version {}, set: {:?}",
+        addresses[2],
+        start_2_failures_state.epoch,
+        start_2_failures_state.version,
+        start_2_failures_validator_set
+    );
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    reconfig(
+        &rest_clients[0],
+        &transaction_factory,
+        swarm.chain_info().root_account(),
+    )
+    .await;
+
+    cli.fund_account(validator_cli_indices[3], Some(10000))
+        .await
+        .unwrap();
+    // faucet can make our root LocalAccount sequence number get out of sync.
+    swarm
+        .chain_info()
+        .resync_root_account_seq_num(&rest_clients[3])
+        .await
+        .unwrap();
+
+    cli.leave_validator_set(validator_cli_indices[3], None)
+        .await
+        .unwrap();
+
+    reconfig(
+        &rest_clients[0],
+        &transaction_factory,
+        swarm.chain_info().root_account(),
+    )
+    .await;
+
+    let (start_3_left_state, start_3_left_validator_set) =
+        get_state_and_validator_set(&rest_clients[0]).await;
+    println!(
+        "Node 3 ({}) leaves validator set: at epoch {} and version {}, set: {:?}",
+        addresses[3],
+        start_3_left_state.epoch,
+        start_3_left_state.version,
+        start_3_left_validator_set
+    );
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    reconfig(
+        &rest_clients[0],
+        &transaction_factory,
+        swarm.chain_info().root_account(),
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    reconfig(
+        &rest_clients[0],
+        &transaction_factory,
+        swarm.chain_info().root_account(),
+    )
+    .await;
+
+    let (mid_state, mid_validator_set) = get_state_and_validator_set(&rest_clients[0]).await;
+    println!(
+        "MID: at epoch {} and version {} set: {:?}",
+        mid_state.epoch, mid_state.version, mid_validator_set
+    );
+
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    let (end_state, end_validator_set) = get_state_and_validator_set(&rest_clients[0]).await;
+    println!(
+        "END: at epoch {} and version {} set: {:?}",
+        end_state.epoch, end_state.version, end_validator_set
+    );
+
+    cli.analyze_validator_performance(None, None).await.unwrap();
+
+    let epochs = FetchMetadata::fetch_new_block_events(&rest_clients[0], None, None)
+        .await
+        .unwrap();
+    let mut previous_stats: Option<EpochStats> = None;
+    for epoch_info in epochs {
+        if let Some(previous) = previous_stats {
+            let mut estimates = Vec::new();
+            for cur_validator in &epoch_info.validators {
+                let prev_stats = previous
+                    .validator_stats
+                    .get(&cur_validator.address)
+                    .unwrap();
+                if prev_stats.proposal_successes == 0 {
+                    assert_eq!(cur_validator.voting_power, prev_stats.voting_power);
+                } else {
+                    assert!(cur_validator.voting_power > prev_stats.voting_power, "in epoch {} voting power for {} didn't increase with successful proposals (from {} to {})", epoch_info.epoch - 1, cur_validator.address, prev_stats.voting_power, cur_validator.voting_power);
+                    let earning = (cur_validator.voting_power - prev_stats.voting_power) as f64
+                        / prev_stats.voting_power as f64;
+                    let failure_rate = prev_stats.failure_rate() as f64;
+                    println!(
+                        "{}: {} / {}, prev_voting_power = {}",
+                        cur_validator.address, earning, failure_rate, prev_stats.voting_power
+                    );
+                    let epoch_reward_estimate = earning / (1.0 - failure_rate);
+                    estimates.push(epoch_reward_estimate);
+                }
+            }
+            assert!(
+                estimates.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                    / estimates.iter().copied().fold(f64::INFINITY, f64::min)
+                    < 1.1,
+                "in epoch {}, estimated epoch reward rate differs: {:?}",
+                epoch_info.epoch - 1,
+                estimates
+            );
+        }
+
+        let epoch_stats = AnalyzeValidators::analyze(epoch_info.blocks, &epoch_info.validators);
+
+        if epoch_info.epoch >= start_3_left_state.epoch {
+            assert!(
+                !epoch_stats.validator_stats.contains_key(&addresses[3]),
+                "Epoch {}, node {} shouldn't be present",
+                epoch_info.epoch,
+                addresses[3]
+            );
+        }
+
+        if epoch_info.epoch >= start_2_failures_state.epoch {
+            assert_eq!(
+                0,
+                epoch_stats
+                    .validator_stats
+                    .get(&addresses[2])
+                    .unwrap()
+                    .proposal_successes,
+                "Epoch {}, node {} shouldn't have any successful proposals",
+                epoch_info.epoch,
+                addresses[2]
+            );
+        }
+
+        previous_stats = Some(epoch_stats);
+    }
+
+    assert!(false);
 }
 
 #[tokio::test]

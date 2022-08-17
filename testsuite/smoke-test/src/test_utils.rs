@@ -1,7 +1,7 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-use aptos_rest_client::Client as RestClient;
+use aptos_rest_client::{Client as RestClient, State, Transaction};
 use aptos_sdk::{
     transaction_builder::TransactionFactory,
     types::{transaction::SignedTransaction, LocalAccount},
@@ -55,24 +55,57 @@ pub async fn reconfig(
     client: &RestClient,
     transaction_factory: &TransactionFactory,
     root_account: &mut LocalAccount,
-) {
+) -> State {
     let aptos_version = client.get_aptos_version().await.unwrap();
-    let current_version = *aptos_version.into_inner().major.inner();
+    let (current, state) = aptos_version.into_parts();
+    let current_version = *current.major.inner();
     let txn = root_account.sign_with_transaction_builder(
         transaction_factory.payload(aptos_stdlib::version_set_version(current_version + 1)),
     );
-    client
+    let transaction = client
         .submit_and_wait(&txn)
         .await
         .map_err(|e| {
+            let last_transactions = futures::executor::block_on(
+                async {
+                    client.get_account_transactions(root_account.address(), None, None).await
+                }
+            ).map(|result|
+                result.into_inner().iter().map(
+                    |t| {
+                        if let Transaction::UserTransaction(ut) = t {
+                            format!("user seq={}", ut.request.sequence_number)
+                        } else {
+                            format!("{}", t.type_str())
+                        }
+                    }
+                ).collect::<Vec<_>>()
+            );
+
             panic!(
-                "Couldn't execute {:?}, for account {:?}, error {:?}",
-                txn, root_account, e
+                "Couldn't execute {:?}, for account {:?}, error {:?}, last account transactions: {:?}",
+                txn, root_account, e, last_transactions.unwrap_or_default()
             )
         })
         .unwrap();
+    // Next transaction after reconfig should be a new epoch.
+    let new_state = client
+        .wait_for_version(transaction.inner().version().unwrap() + 1)
+        .await
+        .unwrap();
 
-    println!("Changing aptos version to {}", current_version + 1,);
+    println!(
+        "Changed aptos version from {} (epoch={}, ledger_v={}), to {}, (epoch={}, ledger_v={})",
+        current_version,
+        state.epoch,
+        state.version,
+        current_version + 1,
+        new_state.epoch,
+        new_state.version
+    );
+    assert_ne!(state.epoch, new_state.epoch);
+
+    new_state
 }
 
 pub async fn transfer_and_reconfig(
