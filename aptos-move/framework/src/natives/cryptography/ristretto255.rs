@@ -6,7 +6,7 @@ use crate::natives::util::make_native_from_func;
 use aptos_types::vm_status::StatusCode;
 use curve25519_dalek::scalar::Scalar;
 use move_deps::move_binary_format::errors::{PartialVMError, PartialVMResult};
-use move_deps::move_vm_types::values::Value;
+use move_deps::move_vm_types::values::{Reference, StructRef, Value};
 use move_deps::{move_vm_runtime::native_functions::NativeFunction, move_vm_types::pop_arg};
 use std::collections::VecDeque;
 
@@ -29,6 +29,7 @@ impl From<GasCost> for u64 {
 pub struct GasParameters {
     pub base_cost: u64,
 
+    pub basepoint_mul_cost: u64,
     pub basepoint_double_mul_cost: u64,
 
     pub point_add_cost: u64,
@@ -107,6 +108,10 @@ pub fn make_all(gas_params: GasParameters) -> impl Iterator<Item = (String, Nati
             make_native_from_func(gas_params.clone(), ristretto255_point::native_point_sub),
         ),
         (
+            "basepoint_mul_internal",
+            make_native_from_func(gas_params.clone(), ristretto255_point::native_basepoint_mul),
+        ),
+        (
             "basepoint_double_mul_internal",
             make_native_from_func(
                 gas_params.clone(),
@@ -125,6 +130,13 @@ pub fn make_all(gas_params: GasParameters) -> impl Iterator<Item = (String, Nati
             make_native_from_func(
                 gas_params.clone(),
                 ristretto255_point::native_new_point_from_64_uniform_bytes,
+            ),
+        ),
+        (
+            "multi_scalar_mul_internal",
+            make_native_from_func(
+                gas_params.clone(),
+                ristretto255_point::native_multi_scalar_mul,
             ),
         ),
         (
@@ -211,9 +223,41 @@ pub fn pop_64_byte_slice(arguments: &mut VecDeque<Value>) -> PartialVMResult<[u8
     <[u8; 64]>::try_from(bytes).map_err(|_| PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR))
 }
 
-/// Pops a Scalar off the argument stack.
-pub fn pop_scalar(arguments: &mut VecDeque<Value>) -> PartialVMResult<Scalar> {
+/// Pops a Scalar off the argument stack when the argument was a vector<u8>.
+pub fn pop_scalar_from_bytes(arguments: &mut VecDeque<Value>) -> PartialVMResult<Scalar> {
     let bytes = pop_arg!(arguments, Vec<u8>);
 
-    ristretto255_scalar::scalar_from_valid_bytes(bytes)
+    scalar_from_valid_bytes(bytes)
+}
+
+/// The 'data' field inside a Move Scalar struct is at index 0.
+const DATA_FIELD_INDEX: usize = 0;
+
+/// Get a curve25519-dalek Scalar struct from a Move Scalar struct.
+pub fn scalar_from_struct(move_scalar: Value) -> PartialVMResult<Scalar> {
+    let move_struct = move_scalar.value_as::<StructRef>()?;
+
+    let bytes_field_ref = move_struct
+        .borrow_field(DATA_FIELD_INDEX)?
+        .value_as::<Reference>()?;
+
+    let scalar_bytes = bytes_field_ref.read_ref()?.value_as::<Vec<u8>>()?;
+
+    scalar_from_valid_bytes(scalar_bytes)
+}
+
+/// Constructs a curve25519-dalek Scalar from a sequence of bytes which are assumed to
+/// canonically-encode it. Callers who are not sure of the canonicity of the encoding MUST call
+/// Scalar::is_canonical() after on the returned Scalar.
+pub fn scalar_from_valid_bytes(bytes: Vec<u8>) -> PartialVMResult<Scalar> {
+    // A Move Scalar's length should be exactly 32 bytes
+    let slice = <[u8; 32]>::try_from(bytes)
+        .map_err(|_| PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR))?;
+
+    // NOTE: This will clear the high bit of 'slice'
+    let s = Scalar::from_bits(slice);
+
+    debug_assert!(s.is_canonical());
+
+    Ok(s)
 }

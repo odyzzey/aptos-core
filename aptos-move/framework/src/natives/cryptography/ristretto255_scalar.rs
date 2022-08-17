@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::natives::cryptography::ristretto255::{
-    pop_32_byte_slice, pop_64_byte_slice, pop_scalar, GasCost, GasParameters,
+    pop_32_byte_slice, pop_64_byte_slice, pop_scalar_from_bytes, GasCost, GasParameters,
 };
 use curve25519_dalek::scalar::Scalar;
-use move_deps::move_binary_format::errors::PartialVMError;
-use move_deps::move_core_types::vm_status::StatusCode;
 use move_deps::{
     move_binary_format::errors::PartialVMResult,
     move_vm_runtime::native_functions::NativeContext,
@@ -18,18 +16,6 @@ use sha2::Sha512;
 use smallvec::smallvec;
 use std::ops::{Add, Mul, Neg, Sub};
 use std::{collections::VecDeque, convert::TryFrom};
-
-/// Constructs a curve25519-dalek Scalar from a sequence of bytes which are assumed to
-/// canonically-encode it. Callers who are not sure of the canonicity of the encoding MUST call
-/// Scalar::is_canonical() after on the returned Scalar.
-pub fn scalar_from_valid_bytes(bytes: Vec<u8>) -> PartialVMResult<Scalar> {
-    // A Move Scalar's length should be exactly 32 bytes
-    let slice = <[u8; 32]>::try_from(bytes)
-        .map_err(|_| PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR))?;
-
-    // NOTE: This will clear the high bit of 'slice'
-    Ok(Scalar::from_bits(slice))
-}
 
 pub(crate) fn native_scalar_is_canonical(
     gas_params: &GasParameters,
@@ -70,7 +56,7 @@ pub(crate) fn native_scalar_invert(
 
     let mut cost = GasCost(gas_params.base_cost);
 
-    let s = pop_scalar(&mut arguments)?;
+    let s = pop_scalar_from_bytes(&mut arguments)?;
 
     // We'd like to ensure all Move Scalar types are canonical scalars reduced modulo \ell
     debug_assert!(s.is_canonical());
@@ -118,8 +104,8 @@ pub(crate) fn native_scalar_mul(
 
     let mut cost = GasCost(gas_params.base_cost);
 
-    let b = pop_scalar(&mut arguments)?;
-    let a = pop_scalar(&mut arguments)?;
+    let b = pop_scalar_from_bytes(&mut arguments)?;
+    let a = pop_scalar_from_bytes(&mut arguments)?;
 
     // We'd like to ensure all Move Scalar types are canonical scalars reduced modulo \ell
     debug_assert!(a.is_canonical());
@@ -145,8 +131,8 @@ pub(crate) fn native_scalar_add(
 
     let mut cost = GasCost(gas_params.base_cost);
 
-    let b = pop_scalar(&mut arguments)?;
-    let a = pop_scalar(&mut arguments)?;
+    let b = pop_scalar_from_bytes(&mut arguments)?;
+    let a = pop_scalar_from_bytes(&mut arguments)?;
 
     // We'd like to ensure all Move Scalar types are canonical scalars reduced modulo \ell
     debug_assert!(a.is_canonical());
@@ -172,8 +158,8 @@ pub(crate) fn native_scalar_sub(
 
     let mut cost = GasCost(gas_params.base_cost);
 
-    let b = pop_scalar(&mut arguments)?;
-    let a = pop_scalar(&mut arguments)?;
+    let b = pop_scalar_from_bytes(&mut arguments)?;
+    let a = pop_scalar_from_bytes(&mut arguments)?;
 
     // We'd like to ensure all Move Scalar types are canonical scalars reduced modulo \ell
     debug_assert!(a.is_canonical());
@@ -199,7 +185,7 @@ pub(crate) fn native_scalar_neg(
 
     let mut cost = GasCost(gas_params.base_cost);
 
-    let a = pop_scalar(&mut arguments)?;
+    let a = pop_scalar_from_bytes(&mut arguments)?;
 
     // We'd like to ensure all Move Scalar types are canonical scalars reduced modulo \ell
     debug_assert!(a.is_canonical());

@@ -27,7 +27,6 @@
 ///    - batch_invert()
 ///
 ///  * For points:
-///    - basepoint_mul() for faster multiplications using precomputation tables (see MSM notes below for limitations)
 ///
 ///    - double()
 ///      + The challenge is that curve25519-dalek does NOT export double for Ristretto points (nor for Edwards)
@@ -42,8 +41,13 @@
 module aptos_std::ristretto255 {
     use std::option::Option;
     use std::bit_vector::BitVector;
+
     #[test_only]
     use std::option;
+
+    //
+    // Constants
+    //
 
     /// The order of the Ristretto255 group and its scalar field, in little-endian.
     const ORDER_ELL : vector<u8> = vector[
@@ -62,13 +66,34 @@ module aptos_std::ristretto255 {
     /// The maximum size in bytes of a canonically-encoded Ristretto255 point is 32 bytes.
     const MAX_POINT_NUM_BYTES: u64 = 32u64;
 
-    /// The generator of the Ristretto255 group, also known as the "basepoint".
+    /// The basepoint (generator) of the Ristretto255 group
     const BASE_POINT: vector<u8> = vector[
         0xe2, 0xf2, 0xae, 0x0a, 0x6a, 0xbc, 0x4e, 0x71,
         0xa8, 0x84, 0xa9, 0x61, 0xc5, 0x00, 0x51, 0x5f,
         0x58, 0xe3, 0x0b, 0x6a, 0xa5, 0x82, 0xdd, 0x8d,
         0xb6, 0xa6, 0x59, 0x45, 0xe0, 0x8d, 0x2d, 0x76,
     ];
+
+    //
+    // Reasons for error codes
+    //
+
+    /// The number of scalars does not match the number of points.
+    const E_DIFFERENT_NUM_POINTS_AND_SCALARS: u64 = 1;
+    /// Expected more than zero points as input.
+    const E_ZERO_POINTS: u64 = 2;
+    /// Expected more than zero scalars as input.
+    const E_ZERO_SCALARS: u64 = 3;
+
+    //
+    // Scalar and point structs
+    //
+
+    /// This struct represents a scalar as a little-endian byte encoding of an integer in $\mathbb{Z}_\ell$, which is
+    /// stored in `data`. Here, \ell denotes the order of the scalar field (and the underlying elliptic curve group).
+    struct Scalar has key, copy, store, drop {
+        data: vector<u8>
+    }
 
     /// This struct represents a serialized point on the Ristretto255 curve, in 32 bytes.
     /// This struct can be decompressed from storage into an in-memory RistrettoPoint, on which fast curve arithmetic
@@ -85,6 +110,10 @@ module aptos_std::ristretto255 {
         handle: u64
     }
 
+    //
+    // Functions for arithmetic on points
+    //
+
     /// Returns the identity point as a CompressedRistretto.
     public fun point_identity_compressed(): CompressedRistretto {
         CompressedRistretto {
@@ -99,19 +128,27 @@ module aptos_std::ristretto255 {
         }
     }
 
-    /// Returns the generator of the Ristretto255 group as a compressed point
-    public fun point_generator_compressed(): CompressedRistretto {
+    /// Returns the basepoint (generator) of the Ristretto255 group as a compressed point
+    public fun basepoint_compressed(): CompressedRistretto {
         CompressedRistretto {
             data: BASE_POINT
         }
     }
 
-    /// Returns the generator of the Ristretto255 group
-    public fun point_generator() : RistrettoPoint {
+    /// Returns the basepoint (generator) of the Ristretto255 group
+    public fun basepoint() : RistrettoPoint {
         let (handle, _) = point_decompress_internal(BASE_POINT);
 
         RistrettoPoint {
             handle
+        }
+    }
+
+    /// Multiplies the basepoint (generator) of the Ristretto255 group by a scalar and returns the result.
+    /// This call is much faster than `point_mul(&basepoint(), &some_scalar)` because of precomputation tables.
+    public fun basepoint_mul(a: &Scalar) : RistrettoPoint {
+        RistrettoPoint {
+            handle: basepoint_mul_internal(a.data)
         }
     }
 
@@ -242,11 +279,21 @@ module aptos_std::ristretto255 {
     /// Returns true if the two RistrettoPoints are the same points on the elliptic curve.
     native public fun point_equals(g: &RistrettoPoint, h: &RistrettoPoint): bool;
 
-    /// This struct represents a scalar as a little-endian byte encoding of an integer in $\mathbb{Z}_\ell$, which is
-    /// stored in `data`. Here, \ell denotes the order of the scalar field (and the underlying elliptic curve group).
-    struct Scalar has key, copy, store, drop {
-        data: vector<u8>
+    /// Computes a multi-scalar multiplication, returning a_1 p_1 + a_2 p_2 + ... + a_n p_n.
+    /// This function is much faster than computing each a_i p_i using `point_mul` and adding up the results using `point_add`.
+    public fun multi_scalar_mul(points: &vector<RistrettoPoint>, scalars: &vector<Scalar>): RistrettoPoint {
+        assert!(!std::vector::is_empty(points), std::error::invalid_argument(E_ZERO_POINTS));
+        assert!(!std::vector::is_empty(scalars), std::error::invalid_argument(E_ZERO_SCALARS));
+        assert!(std::vector::length(points) == std::vector::length(scalars), std::error::invalid_argument(E_DIFFERENT_NUM_POINTS_AND_SCALARS));
+
+        RistrettoPoint {
+            handle: multi_scalar_mul_internal<RistrettoPoint, Scalar>(points, scalars)
+        }
     }
+
+    //
+    // Functions for arithmetic on Scalars
+    //
 
     /// Given a sequence of 32 bytes, checks if they canonically-encode a Scalar and return it.
     /// Otherwise, returns None.
@@ -444,6 +491,7 @@ module aptos_std::ristretto255 {
     //
     // Only used internally for implementing CompressedRistretto and RistrettoPoint
     //
+
     native fun new_point_from_sha512_internal(sha512: vector<u8>): u64;
 
     native fun new_point_from_64_uniform_bytes_internal(bytes: vector<u8>): u64;
@@ -458,6 +506,7 @@ module aptos_std::ristretto255 {
 
     native fun point_mul_internal(point: &RistrettoPoint, a: vector<u8>, in_place: bool): u64;
 
+    native fun basepoint_mul_internal(a: vector<u8>): u64;
     native fun basepoint_double_mul_internal(a: vector<u8>, some_point: &RistrettoPoint, b: vector<u8>): u64;
 
     native fun point_add_internal(a: &RistrettoPoint, b: &RistrettoPoint, in_place: bool): u64;
@@ -465,9 +514,16 @@ module aptos_std::ristretto255 {
 
     native fun point_neg_internal(a: &RistrettoPoint, in_place: bool): u64;
 
+    /// The generic arguments are needed to deal with some Move VM peculiarities which prevent us from borrowing the
+    /// points (or scalars) inside a &vector in Rust.
+    ///
+    /// WARNING: This function can only be called with P = RistrettoPoint and S = Scalar.
+    native fun multi_scalar_mul_internal<P, S>(points: &vector<P>, scalars: &vector<S>): u64;
+
     //
     // Only used internally for implementing Scalar.
     //
+
     native fun scalar_is_canonical_internal(s: vector<u8>): bool;
 
     native fun scalar_from_u64_internal(num: u64): vector<u8>;
@@ -700,10 +756,10 @@ module aptos_std::ristretto255 {
 
     #[test]
     fun test_point_decompression() {
-        let compressed = new_compressed_point_from_bytes(BASE_POINT);
+        let compressed = new_compressed_point_from_bytes(A_POINT);
         assert!(std::option::is_some(&compressed), 1);
 
-        let point = new_point_from_bytes(BASE_POINT);
+        let point = new_point_from_bytes(A_POINT);
         assert!(std::option::is_some(&point), 1);
 
         let point = std::option::extract(&mut point);
@@ -715,7 +771,7 @@ module aptos_std::ristretto255 {
 
     #[test]
     fun test_point_equals() {
-        let g = point_generator();
+        let g = basepoint();
         let same_g = std::option::extract(&mut new_point_from_bytes(BASE_POINT));
         let ag = std::option::extract(&mut new_point_from_bytes(A_TIMES_BASE_POINT));
 
@@ -726,7 +782,7 @@ module aptos_std::ristretto255 {
     #[test]
     fun test_point_mul() {
         // fetch g
-        let g = point_generator();
+        let g = basepoint();
         // fetch a
         let a = std::option::extract(&mut new_scalar_from_bytes(A_SCALAR));
         // fetch expected a*g
@@ -746,7 +802,7 @@ module aptos_std::ristretto255 {
 
     #[test]
     fun test_point_mul_assign() {
-        let g = point_generator();
+        let g = basepoint();
         assert!(g.handle == 0, 1);
 
         let a = std::option::extract(&mut new_scalar_from_bytes(A_SCALAR));
@@ -816,12 +872,6 @@ module aptos_std::ristretto255 {
     }
 
     fun test_point_add_assign_internal(before_a_gap: u64, before_b_gap: u64) {
-//        std::debug::print(&std::string::utf8(b"before_a:"));
-//        std::debug::print(&before_a_gap);
-//
-//        std::debug::print(&std::string::utf8(b"before_b:"));
-//        std::debug::print(&before_b_gap);
-
         // create extra RistrettoPoints here, so as to generate different PointStore layouts inside the native Rust implementation
         let c = before_a_gap;
         while (c > 0) {
@@ -832,8 +882,6 @@ module aptos_std::ristretto255 {
 
         // fetch a
         let a = std::option::extract(&mut new_point_from_bytes(A_POINT));
-//        std::debug::print(&std::string::utf8(b"a:"));
-//        std::debug::print(&a.handle);
 
         // create extra RistrettoPoints here, so as to generate different PointStore layouts inside the native Rust implementation
         let c = before_b_gap;
@@ -844,8 +892,6 @@ module aptos_std::ristretto255 {
         };
         // fetch b
         let b = std::option::extract(&mut new_point_from_bytes(B_POINT));
-//        std::debug::print(&std::string::utf8(b"b:"));
-//        std::debug::print(&b.handle);
 
         let a_plus_b = std::option::extract(&mut new_point_from_bytes(A_PLUS_B_POINT));
 
@@ -915,6 +961,14 @@ module aptos_std::ristretto255 {
     }
 
     #[test]
+    fun test_basepoint_mul() {
+        let a = Scalar { data: A_SCALAR };
+        let basepoint = basepoint();
+        let expected = point_mul(&basepoint, &a);
+        assert!(point_equals(&expected, &basepoint_mul(&a)), 1);
+    }
+
+    #[test]
     fun test_basepoint_double_mul() {
         let expected = option::extract(&mut new_point_from_bytes(x"be5d615d8b8f996723cdc6e1895b8b6d312cc75d1ffb0259873b99396a38c05a"));
 
@@ -922,6 +976,92 @@ module aptos_std::ristretto255 {
         let a_point = option::extract(&mut new_point_from_bytes(A_POINT));
         let b = Scalar { data: B_SCALAR };
         assert!(point_equals(&expected, &basepoint_double_mul(&a, &a_point, &b)), 1);
+    }
+
+    #[test]
+    #[expected_failure]
+    fun test_multi_scalar_mul_aborts_empty_scalars() {
+        multi_scalar_mul(&vector[ basepoint() ], &vector[]);
+    }
+    #[test]
+    #[expected_failure]
+    fun test_multi_scalar_mul_aborts_empty_points() {
+        multi_scalar_mul(&vector[ ], &vector[ Scalar { data: A_SCALAR } ]);
+    }
+
+    #[test]
+    #[expected_failure]
+    fun test_multi_scalar_mul_aborts_empty_all() {
+        multi_scalar_mul(&vector[ ], &vector[ ]);
+    }
+
+    #[test]
+    #[expected_failure]
+    fun test_multi_scalar_mul_aborts_different_sizes() {
+        multi_scalar_mul(&vector[ basepoint() ], &vector[ Scalar { data: A_SCALAR }, Scalar { data: B_SCALAR }  ]);
+    }
+
+    #[test]
+    fun test_multi_scalar_mul_single() {
+        // Test single exp
+        let points = vector[
+            basepoint(),
+        ];
+
+        let scalars = vector[
+            Scalar { data: A_SCALAR },
+        ];
+
+        let result = multi_scalar_mul(&points, &scalars);
+        let expected = std::option::extract(&mut new_point_from_bytes(A_TIMES_BASE_POINT));
+
+        assert!(point_equals(&result, &expected), 1);
+    }
+
+    #[test]
+    fun test_multi_scalar_mul_double() {
+        // Test double exp
+        let points = vector[
+            basepoint(),
+            basepoint(),
+        ];
+
+        let scalars = vector[
+            Scalar { data: A_SCALAR },
+            Scalar { data: B_SCALAR },
+        ];
+
+        let result = multi_scalar_mul(&points, &scalars);
+        let expected = basepoint_double_mul(
+            std::vector::borrow(&scalars, 0),
+            &basepoint(),
+            std::vector::borrow(&scalars, 1));
+
+        assert!(point_equals(&result, &expected), 1);
+    }
+
+    #[test]
+    fun test_multi_scalar_mul_many() {
+        let scalars = vector[
+            new_scalar_from_sha512(b"1"),
+            new_scalar_from_sha512(b"2"),
+            new_scalar_from_sha512(b"3"),
+            new_scalar_from_sha512(b"4"),
+            new_scalar_from_sha512(b"5"),
+        ];
+
+        let points = vector[
+            new_point_from_sha512(b"1"),
+            new_point_from_sha512(b"2"),
+            new_point_from_sha512(b"3"),
+            new_point_from_sha512(b"4"),
+            new_point_from_sha512(b"5"),
+        ];
+
+        let expected = std::option::extract(&mut new_point_from_bytes(x"c4a98fbe6bd0f315a0c150858aec8508be397443093e955ef982e299c1318928"));
+        let result = multi_scalar_mul(&points, &scalars);
+
+        assert!(point_equals(&expected, &result), 1);
     }
 
     #[test]
