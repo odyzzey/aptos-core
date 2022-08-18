@@ -37,18 +37,15 @@ pub struct VersionData {
 impl From<StateStorageUsage> for VersionData {
     fn from(usage: StateStorageUsage) -> Self {
         Self {
-            state_items: usage.items,
-            total_state_bytes: usage.bytes,
+            state_items: usage.items(),
+            total_state_bytes: usage.bytes(),
         }
     }
 }
 
 impl VersionData {
     pub fn get_state_storage_usage(&self) -> StateStorageUsage {
-        StateStorageUsage {
-            items: self.state_items,
-            bytes: self.total_state_bytes,
-        }
+        StateStorageUsage::new(self.state_items, self.total_state_bytes)
     }
 }
 

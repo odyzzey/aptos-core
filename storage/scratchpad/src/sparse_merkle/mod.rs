@@ -358,7 +358,7 @@ where
 
     #[cfg(test)]
     fn new_test(root_hash: HashValue) -> Self {
-        Self::new(root_hash, StateStorageUsage::zero())
+        Self::new(root_hash, StateStorageUsage::new_untracked())
     }
 
     pub fn new_empty() -> Self {
@@ -391,7 +391,7 @@ where
     #[cfg(test)]
     fn new_with_root(root: SubTree<V>) -> Self {
         Self {
-            inner: Inner::new(root, StateStorageUsage::zero()),
+            inner: Inner::new(root, StateStorageUsage::new_untracked()),
         }
     }
 

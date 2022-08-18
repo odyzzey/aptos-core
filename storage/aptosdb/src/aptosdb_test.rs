@@ -186,7 +186,7 @@ fn test_get_latest_executed_trees() {
     assert!(
         bootstrapped.is_same_view(&ExecutedTrees::new_at_state_checkpoint(
             txn_info.state_checkpoint_hash().unwrap(),
-            StateStorageUsage::zero(),
+            StateStorageUsage::new_untracked(),
             vec![txn_info.hash()],
             1,
         ))

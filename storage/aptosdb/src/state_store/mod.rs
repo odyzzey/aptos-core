@@ -145,17 +145,11 @@ impl DbReader for StateDb {
 
     fn get_state_storage_usage(&self, version: Option<Version>) -> Result<StateStorageUsage> {
         version.map_or(Ok(StateStorageUsage::zero()), |version| {
-            let VersionData {
-                state_items,
-                total_state_bytes,
-            } = self
+            Ok(self
                 .ledger_db
                 .get::<VersionDataSchema>(&version)?
-                .ok_or_else(|| AptosDbError::NotFound(format!("VersionData at {}", version)))?;
-            Ok(StateStorageUsage {
-                items: state_items,
-                bytes: total_state_bytes,
-            })
+                .ok_or_else(|| AptosDbError::NotFound(format!("VersionData at {}", version)))?
+                .get_state_storage_usage())
         })
     }
 }
@@ -456,9 +450,10 @@ impl StateStore {
         &self,
         value_state_sets: Vec<&HashMap<StateKey, Option<StateValue>>>,
         first_version: Version,
+        expected_usage: StateStorageUsage,
         cs: &mut ChangeSet,
     ) -> Result<()> {
-        self.put_stats_and_indices(&value_state_sets, first_version, cs)?;
+        self.put_stats_and_indices(&value_state_sets, first_version, expected_usage, cs)?;
 
         let kv_batch = value_state_sets
             .iter()
@@ -488,6 +483,7 @@ impl StateStore {
         &self,
         value_state_sets: &[&HashMap<StateKey, Option<StateValue>>],
         first_version: Version,
+        expected_usage: StateStorageUsage,
         cs: &mut ChangeSet,
     ) -> Result<()> {
         let _timer = OTHER_TIMERS_SECONDS
@@ -504,8 +500,7 @@ impl StateStore {
 
             for (key, value) in kvs.iter() {
                 if let Some(value) = value {
-                    usage.items += 1;
-                    usage.bytes += key.size() + value.size();
+                    usage.add_item(key.size() + value.size());
                 } else {
                     // stale index of the tombstone at current version.
                     cs.batch.put::<StaleStateValueIndexSchema>(
@@ -518,37 +513,43 @@ impl StateStore {
                     )?;
                 }
 
-                if version > 0 {
-                    let old_version_and_value_opt = if let Some((old_version, old_value_opt)) =
-                        cache.insert(key.clone(), (version, value.clone()))
-                    {
-                        old_value_opt.map(|value| (old_version, value))
-                    } else if let Some(base_version) = base_version {
-                        self.state_db
-                            .get_state_value_with_version_by_version(key, base_version)?
-                    } else {
-                        None
-                    };
+                let old_version_and_value_opt = if let Some((old_version, old_value_opt)) =
+                    cache.insert(key.clone(), (version, value.clone()))
+                {
+                    old_value_opt.map(|value| (old_version, value))
+                } else if let Some(base_version) = base_version {
+                    self.state_db
+                        .get_state_value_with_version_by_version(key, base_version)?
+                } else {
+                    None
+                };
 
-                    if let Some((old_version, old_value)) = old_version_and_value_opt {
-                        usage.items -= 1;
-                        usage.bytes -= key.size() + old_value.size();
-                        // stale index of the old value at its version.
-                        cs.batch.put::<StaleStateValueIndexSchema>(
-                            &StaleStateValueIndex {
-                                stale_since_version: version,
-                                version: old_version,
-                                state_key: key.clone(),
-                            },
-                            &(),
-                        )?;
-                    }
+                if let Some((old_version, old_value)) = old_version_and_value_opt {
+                    usage.remove_item(key.size() + old_value.size());
+                    // stale index of the old value at its version.
+                    cs.batch.put::<StaleStateValueIndexSchema>(
+                        &StaleStateValueIndex {
+                            stale_since_version: version,
+                            version: old_version,
+                            state_key: key.clone(),
+                        },
+                        &(),
+                    )?;
                 }
             }
 
-            STATE_ITEMS.set(usage.items as i64);
-            TOTAL_STATE_BYTES.set(usage.bytes as i64);
+            STATE_ITEMS.set(usage.items() as i64);
+            TOTAL_STATE_BYTES.set(usage.bytes() as i64);
             cs.batch.put::<VersionDataSchema>(&version, &usage.into())?;
+        }
+
+        if !expected_usage.is_untracked() {
+            ensure!(
+                expected_usage == usage,
+                "Calculated state db usage not expected. expected: {:?}, calculated: {:?}",
+                expected_usage,
+                usage,
+            );
         }
 
         Ok(())

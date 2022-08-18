@@ -106,10 +106,9 @@ impl StateView for FakeDataStore {
     }
 
     fn get_usage(&self) -> Result<StateStorageUsage> {
-        let mut usage = StateStorageUsage::zero();
+        let mut usage = StateStorageUsage::new_untracked();
         for (k, v) in self.state_data.iter() {
-            usage.items += 1;
-            usage.bytes += k.size() + v.len();
+            usage.add_item(k.size() + v.len())
         }
         Ok(usage)
     }

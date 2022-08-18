@@ -90,20 +90,12 @@ impl StateMerkleBatchCommitter {
             .current_version
             .ok_or_else(|| anyhow!("Committing without version."))?;
 
-        let usage_from_smt = state_delta.current.usage();
         let usage_from_ledger_db: StateStorageUsage = self
             .state_db
             .ledger_db
             .get::<VersionDataSchema>(&version)?
             .ok_or_else(|| anyhow!("VersionData missing for version {}", version))?
             .get_state_storage_usage();
-        ensure!(
-            usage_from_smt == usage_from_ledger_db,
-            "State storage usage info inconsistent. from smt: {:?}, from ledger_db: {:?}",
-            usage_from_smt,
-            usage_from_ledger_db,
-        );
-
         let leaf_count_from_jmt = self
             .state_db
             .state_merkle_db
@@ -112,11 +104,22 @@ impl StateMerkleBatchCommitter {
             .leaf_count();
 
         ensure!(
-            usage_from_ledger_db.items == leaf_count_from_jmt,
+            usage_from_ledger_db.items() == leaf_count_from_jmt,
             "State item count inconsistent, {} from ledger db and {} from state tree.",
-            usage_from_ledger_db.items,
+            usage_from_ledger_db.items(),
             leaf_count_from_jmt,
         );
+
+        let usage_from_smt = state_delta.current.usage();
+        if !usage_from_smt.is_untracked() {
+            ensure!(
+                usage_from_smt == usage_from_ledger_db,
+                "State storage usage info inconsistent. from smt: {:?}, from ledger_db: {:?}",
+                usage_from_smt,
+                usage_from_ledger_db,
+            );
+        }
+
         Ok(())
     }
 }

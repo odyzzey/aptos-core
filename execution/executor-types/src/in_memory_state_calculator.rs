@@ -289,8 +289,7 @@ fn process_state_key_write_op(
     let state_value = match write_op {
         WriteOp::Modification(new_value) | WriteOp::Creation(new_value) => {
             let value = StateValue::from(new_value);
-            usage.items += 1;
-            usage.bytes += key_size + value.size();
+            usage.add_item(key_size + value.size());
             Some(value)
         }
         WriteOp::Deletion => None,
@@ -298,8 +297,7 @@ fn process_state_key_write_op(
     let cached = state_cache.insert(state_key.clone(), state_value.clone());
     if let Some(old_value_opt) = cached {
         if let Some(old_value) = old_value_opt {
-            usage.items -= 1;
-            usage.bytes -= key_size + old_value.size();
+            usage.remove_item(key_size + old_value.size());
         }
     } else if let Some(txn) = transaction {
         ensure_txn_valid_for_vacant_entry(txn)?;

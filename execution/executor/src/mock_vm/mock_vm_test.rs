@@ -26,7 +26,7 @@ impl StateView for MockStateView {
     }
 
     fn get_usage(&self) -> Result<StateStorageUsage> {
-        Ok(StateStorageUsage::zero())
+        Ok(StateStorageUsage::new_untracked())
     }
 }
 

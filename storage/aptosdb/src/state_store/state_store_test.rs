@@ -35,7 +35,12 @@ fn put_value_set(
         .unwrap();
     let mut cs = ChangeSet::new();
     state_store
-        .put_value_sets(vec![&value_set], version, &mut cs)
+        .put_value_sets(
+            vec![&value_set],
+            version,
+            StateStorageUsage::new_untracked(),
+            &mut cs,
+        )
         .unwrap();
     state_store.ledger_db.write_schemas(cs.batch).unwrap();
     root
@@ -857,7 +862,12 @@ fn update_store(
             .unwrap();
         let mut cs = ChangeSet::new();
         store
-            .put_value_sets(vec![&value_state_set], version, &mut cs)
+            .put_value_sets(
+                vec![&value_state_set],
+                version,
+                StateStorageUsage::new_untracked(),
+                &mut cs,
+            )
             .unwrap();
         store.ledger_db.write_schemas(cs.batch).unwrap();
     }

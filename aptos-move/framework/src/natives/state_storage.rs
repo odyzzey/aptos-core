@@ -69,8 +69,8 @@ fn native_get_usage(
     Ok(NativeResult::ok(
         gas_params.base_cost,
         smallvec![Value::struct_(Struct::pack(vec![
-            Value::u64(usage.items as u64),
-            Value::u64(usage.bytes as u64),
+            Value::u64(usage.items() as u64),
+            Value::u64(usage.bytes() as u64),
         ]))],
     ))
 }
